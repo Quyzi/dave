@@ -1,0 +1,9 @@
+[package]
+name = "metrics"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+internment = { version = "0.5", features = ["arc"] }
+flume = { version = "0.11.1", default-features = false, features = ["eventual-fairness", "async"] }
+tokio = { version = "1", features = ["rt"] }
