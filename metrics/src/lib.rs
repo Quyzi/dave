@@ -115,7 +115,7 @@ impl Metric {
         if !self.labels.is_empty() {
             buf.push('{');
             for (i, (label, value)) in self.labels.iter().enumerate() {
-                let l = format!(r#"{}="{}""#, label, value);
+                let l = format!(r#"{label}="{value}""#);
                 buf.push_str(&l);
                 if i < self.labels.len() - 1 {
                     buf.push(',');
@@ -128,8 +128,10 @@ impl Metric {
     }
 }
 
+pub(crate) type MetricValue = (Value, Instant);
+
 pub(crate) struct Storage {
-    pub(crate) shards: Arc<Vec<RwLock<HashMap<Metric, (Value, Instant)>>>>,
+    pub(crate) shards: Arc<Vec<RwLock<HashMap<Metric, MetricValue>>>>,
 }
 
 impl Storage {
