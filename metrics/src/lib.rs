@@ -10,6 +10,7 @@ use std::{
 };
 use tokio::time::{Duration, Instant};
 
+pub mod builder;
 pub mod recorder;
 
 pub type MetricString = ArcIntern<String>;

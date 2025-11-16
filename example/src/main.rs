@@ -1,25 +1,14 @@
 use actix_web::{App, HttpRequest, HttpResponse, HttpServer, Responder, get, post, web};
-use std::{num::NonZeroUsize, time::Duration};
-
-use metrics::{
-    Metric, counter,
-    recorder::{FreshnessConfig, MetricRecorder},
-};
+use metrics::{Metric, builder::DaveBuilder, counter, recorder::MetricRecorder};
+use std::time::Duration;
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     tracing_subscriber::fmt().init();
 
-    // Initialize with default freshness config (5 min default, 30 sec scan interval)
-    let mut freshness_config = FreshnessConfig::default();
-
-    // Optionally set custom freshness for specific metrics before initialization
-    freshness_config.per_metric_durations.insert(
-        "http_requests".to_string().into(),
-        Duration::from_secs(2 * 60),
-    );
-
-    MetricRecorder::initialize(NonZeroUsize::new(16).unwrap(), 64, freshness_config);
+    DaveBuilder::default()
+        .metric_freshness("http_requests", Duration::from_secs(2 * 60))
+        .build_install();
 
     // Can also set freshness at runtime after initialization
     MetricRecorder::set_metric_freshness("other_metric".to_string(), Duration::from_secs(10 * 60));
