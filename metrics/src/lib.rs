@@ -19,12 +19,18 @@ pub type MetricString = ArcIntern<String>;
 pub enum MetricType {
     Counter,
     Gauge,
+    Histogram,
 }
 
 #[derive(Debug, Clone)]
 pub enum Value {
     Counter(f64),
     Gauge(f64),
+    Histogram {
+        buckets: Vec<f64>,
+        sum: f64,
+        count: f64,
+    },
 }
 
 impl Value {
@@ -32,12 +38,14 @@ impl Value {
         match self {
             Value::Counter(f) => *f,
             Value::Gauge(f) => *f,
+            Value::Histogram { count, .. } => *count,
         }
     }
     pub fn increment(&mut self, by: f64) {
         match self {
             Value::Counter(v) => v.add_assign(by),
             Value::Gauge(v) => v.add_assign(by),
+            Value::Histogram { .. } => {}
         }
     }
 
@@ -45,6 +53,7 @@ impl Value {
         match self {
             Value::Counter(v) => *v = to,
             Value::Gauge(v) => *v = to,
+            Value::Histogram { .. } => {}
         }
     }
 }
@@ -63,6 +72,10 @@ impl Metric {
 
     pub fn new_gauge(name: String, labels: &[(String, String)]) -> Self {
         Self::new(name, labels, MetricType::Gauge)
+    }
+
+    pub fn new_histogram(name: String, labels: &[(String, String)]) -> Self {
+        Self::new(name, labels, MetricType::Histogram)
     }
 
     pub fn new(name: String, labels: &[(String, String)], metric_type: MetricType) -> Self {
@@ -106,6 +119,15 @@ impl Metric {
         if let Some(tx) = GLOBAL_RECORDER.get() {
             let _ = tx.tx.send(MetricChange::Reset {
                 metric: self.clone(),
+            });
+        }
+    }
+
+    pub fn observe(&self, value: f64) {
+        if let Some(tx) = GLOBAL_RECORDER.get() {
+            let _ = tx.tx.send(MetricChange::Observe {
+                metric: self.clone(),
+                value,
             });
         }
     }
@@ -168,6 +190,15 @@ impl Storage {
                 let value = match key.metric_type {
                     MetricType::Counter => Value::Counter(by),
                     MetricType::Gauge => Value::Gauge(by),
+                    MetricType::Histogram => {
+                        // Histograms should not be incremented, only observed
+                        // Create an empty histogram as a placeholder, but this shouldn't happen.
+                        Value::Histogram {
+                            buckets: vec![],
+                            sum: 0.0,
+                            count: 0.0,
+                        }
+                    }
                 };
                 (value, now)
             });
@@ -187,8 +218,65 @@ impl Storage {
                 let value = match key.metric_type {
                     MetricType::Counter => Value::Counter(to),
                     MetricType::Gauge => Value::Gauge(to),
+                    MetricType::Histogram => {
+                        // Histograms should not be set absolutely, only observed
+                        // Create an empty histogram as a placeholder, but this shouldn't happen
+                        Value::Histogram {
+                            buckets: vec![],
+                            sum: to,
+                            count: 0.0,
+                        }
+                    }
                 };
                 (value, now)
+            });
+    }
+
+    pub(crate) fn observe(&self, key: &Metric, value: f64, bucket_boundaries: &[f64]) {
+        let shard = self.which_shard(key);
+        let mut guard = self.shards[shard].write().unwrap();
+        let now = Instant::now();
+
+        guard
+            .entry(key.clone())
+            .and_modify(|(metric_value, timestamp)| {
+                if let Value::Histogram {
+                    buckets,
+                    sum,
+                    count,
+                } = metric_value
+                {
+                    *sum += value;
+                    *count += 1.0;
+
+                    // TODO: Find out if this is the correct behavior
+                    for (i, &boundary) in bucket_boundaries.iter().enumerate() {
+                        if value <= boundary {
+                            buckets[i] += 1.0;
+                        }
+                    }
+                    *timestamp = now;
+                }
+            })
+            .or_insert_with(|| {
+                let mut buckets = vec![0.0; bucket_boundaries.len()];
+                let sum = value;
+                let count = 1.0;
+
+                for (i, &boundary) in bucket_boundaries.iter().enumerate() {
+                    if value <= boundary {
+                        buckets[i] = 1.0;
+                    }
+                }
+
+                (
+                    Value::Histogram {
+                        buckets,
+                        sum,
+                        count,
+                    },
+                    now,
+                )
             });
     }
 
@@ -229,5 +317,16 @@ macro_rules! gauge {
             labels.push(($label.to_string(), $lvalue.to_string()));
         )*
         Metric::new_gauge($name.to_string(), &labels)
+    }};
+}
+
+#[macro_export]
+macro_rules! histogram {
+    ($name:expr $(, $label:expr => $lvalue:expr)*) => {{
+        let mut labels = vec![];
+        $(
+            labels.push(($label.to_string(), $lvalue.to_string()));
+        )*
+        Metric::new_histogram($name.to_string(), &labels)
     }};
 }

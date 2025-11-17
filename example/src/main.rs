@@ -1,6 +1,8 @@
-use actix_web::{App, HttpRequest, HttpResponse, HttpServer, Responder, get, post, web};
-use metrics::{Metric, builder::DaveBuilder, counter, recorder::MetricRecorder};
-use std::time::Duration;
+use actix_web::{
+    App, HttpRequest, HttpResponse, HttpServer, Responder, get, post, rt::time::sleep, web,
+};
+use metrics::{Metric, builder::DaveBuilder, counter, histogram, recorder::MetricRecorder};
+use std::time::{Duration, Instant};
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
@@ -8,10 +10,18 @@ async fn main() -> std::io::Result<()> {
 
     DaveBuilder::default()
         .metric_freshness("http_requests", Duration::from_secs(2 * 60))
+        // Configure custom histogram buckets for request duration
+        .metric_histogram_buckets(
+            "http_request_duration_seconds",
+            vec![
+                0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
+            ],
+        )
         .build_install();
 
-    // Can also set freshness at runtime after initialization
+    // Can also set freshness and histogram buckets at runtime after initialization
     MetricRecorder::set_metric_freshness("other_metric".to_string(), Duration::from_secs(10 * 60));
+    // MetricRecorder::set_metric_histogram_buckets("some_histogram".to_string(), vec![1.0, 5.0, 10.0]);
 
     HttpServer::new(|| {
         App::new()
@@ -27,6 +37,8 @@ async fn main() -> std::io::Result<()> {
 
 #[get("/")]
 async fn hello(req: HttpRequest) -> impl Responder {
+    let start = Instant::now();
+    sleep(Duration::from_secs(1)).await;
     counter!(
         "http_requests",
         "method" => req.method(),
@@ -34,7 +46,20 @@ async fn hello(req: HttpRequest) -> impl Responder {
         "fn" => "hello"
     )
     .increment(1.1);
-    HttpResponse::Ok().body("Hello world!")
+
+    let response = HttpResponse::Ok().body("Hello world!");
+
+    // Record request latency in histogram
+    let latency = start.elapsed().as_secs_f64();
+    histogram!(
+        "http_request_duration_seconds",
+        "method" => req.method(),
+        "path" => req.path(),
+        "fn" => "hello"
+    )
+    .observe(latency);
+
+    response
 }
 
 #[post("/echo")]

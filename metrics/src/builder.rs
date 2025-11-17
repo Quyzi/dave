@@ -4,7 +4,7 @@ use tokio::time::Duration;
 
 use crate::{
     MetricString,
-    recorder::{FreshnessConfig, MetricRecorder},
+    recorder::{FreshnessConfig, HistogramConfig, MetricRecorder},
 };
 
 pub struct DaveBuilder {
@@ -32,6 +32,14 @@ pub struct DaveBuilder {
     /// Metric freshness can be customized by metric name.  Dave will use
     /// the custom metric freshness if it exists, or the default otherwise.
     per_metric_freshness_durations: HashMap<String, Duration>,
+
+    /// Default histogram buckets (Prometheus defaults + Inf)
+    ///
+    /// Default: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, +Inf]
+    default_histogram_buckets: Vec<f64>,
+
+    /// Per-metric histogram bucket overrides
+    per_metric_histogram_buckets: HashMap<String, Vec<f64>>,
 }
 
 impl Default for DaveBuilder {
@@ -42,6 +50,21 @@ impl Default for DaveBuilder {
             freshness_scan_interval: Duration::from_secs(30),
             freshness_duration: Duration::from_secs(5 * 60),
             per_metric_freshness_durations: Default::default(),
+            default_histogram_buckets: vec![
+                0.005,
+                0.01,
+                0.025,
+                0.05,
+                0.1,
+                0.25,
+                0.5,
+                1.0,
+                2.5,
+                5.0,
+                10.0,
+                f64::INFINITY,
+            ],
+            per_metric_histogram_buckets: Default::default(),
         }
     }
 }
@@ -57,10 +80,33 @@ impl DaveBuilder {
             scan_interval: self.freshness_scan_interval,
             per_metric_durations,
         };
+
+        let mut per_metric_buckets = HashMap::new();
+        for (name, buckets) in self.per_metric_histogram_buckets {
+            let mut sorted_buckets = buckets;
+            sorted_buckets.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            if !sorted_buckets.contains(&f64::INFINITY) {
+                sorted_buckets.push(f64::INFINITY);
+            }
+            per_metric_buckets.insert(MetricString::new(name), sorted_buckets);
+        }
+
+        let mut default_buckets = self.default_histogram_buckets;
+        default_buckets.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        if !default_buckets.contains(&f64::INFINITY) {
+            default_buckets.push(f64::INFINITY);
+        }
+
+        let histogram_config = HistogramConfig {
+            default_buckets,
+            per_metric_buckets,
+        };
+
         MetricRecorder::initialize(
             NonZeroUsize::new(self.shards).unwrap(),
             self.channel_buffer_size,
             freshness_config,
+            histogram_config,
         );
     }
 
@@ -88,6 +134,18 @@ impl DaveBuilder {
         let _ = self
             .per_metric_freshness_durations
             .insert(metric.to_string(), dur.into());
+        self
+    }
+
+    pub fn histogram_buckets(mut self, buckets: Vec<f64>) -> Self {
+        self.default_histogram_buckets = buckets;
+        self
+    }
+
+    pub fn metric_histogram_buckets(mut self, metric: &str, buckets: Vec<f64>) -> Self {
+        let _ = self
+            .per_metric_histogram_buckets
+            .insert(metric.to_string(), buckets);
         self
     }
 }
