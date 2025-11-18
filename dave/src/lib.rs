@@ -15,7 +15,7 @@ pub mod recorder;
 
 pub type MetricString = ArcIntern<String>;
 
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub enum MetricType {
     Counter,
     Gauge,
@@ -328,5 +328,21 @@ macro_rules! histogram {
             labels.push(($label.to_string(), $lvalue.to_string()));
         )*
         Metric::new_histogram($name.to_string(), &labels)
+    }};
+}
+
+#[macro_export]
+macro_rules! explain {
+    (counter $name:expr => $desc:expr) => {{
+        MetricRecorder::set_metric_description($name, &MetricType::Counter, $desc);
+    }};
+    (gauge $name:expr => $desc:expr) => {{
+        MetricRecorder::set_metric_description($name, &MetricType::Gauge, $desc);
+    }};
+    (histogram $name:expr => $desc:expr) => {{
+        MetricRecorder::set_metric_description($name, &MetricType::Histogram, $desc);
+    }};
+    ($name:expr => $desc:expr) => {{
+        MetricRecorder::set_metric_description_catchall($name, $desc);
     }};
 }

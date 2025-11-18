@@ -1,7 +1,9 @@
 use actix_web::{
     App, HttpRequest, HttpResponse, HttpServer, Responder, get, post, rt::time::sleep, web,
 };
-use metrics::{Metric, builder::DaveBuilder, counter, histogram, recorder::MetricRecorder};
+use dave::{
+    Metric, MetricType, builder::DaveBuilder, counter, explain, histogram, recorder::MetricRecorder,
+};
 use std::time::{Duration, Instant};
 
 #[actix_web::main]
@@ -20,9 +22,13 @@ async fn main() -> std::io::Result<()> {
         .metric_description("http_requests", "the total number of http requests")
         .build_install();
 
+    explain!(histogram "http_request_duration_seconds" => "http request duration in seconds");
     // Can also set freshness and histogram buckets at runtime after initialization
     MetricRecorder::set_metric_freshness("other_metric".to_string(), Duration::from_secs(10 * 60));
-    MetricRecorder::set_metric_histogram_buckets("some_histogram".to_string(), vec![1.0, 5.0, 10.0]);
+    MetricRecorder::set_metric_histogram_buckets(
+        "some_histogram".to_string(),
+        vec![1.0, 5.0, 10.0],
+    );
 
     HttpServer::new(|| {
         App::new()

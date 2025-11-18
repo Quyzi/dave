@@ -1,4 +1,4 @@
-use crate::{Metric, MetricString, Storage};
+use crate::{Metric, MetricString, MetricType, Storage};
 use flume::{Receiver, Sender};
 use std::{
     collections::{BTreeMap, HashMap},
@@ -61,13 +61,15 @@ impl Default for HistogramConfig {
 
 #[derive(Debug, Clone)]
 pub struct MetricDescriptionConfig {
-    pub per_metric_descriptions: HashMap<MetricString, String>,
+    pub type_specific_descriptions: HashMap<(MetricString, MetricType), String>,
+    pub catchall_descriptions: HashMap<MetricString, String>,
 }
 
 impl Default for MetricDescriptionConfig {
     fn default() -> Self {
         Self {
-            per_metric_descriptions: HashMap::new(),
+            type_specific_descriptions: HashMap::new(),
+            catchall_descriptions: HashMap::new(),
         }
     }
 }
@@ -156,25 +158,50 @@ impl MetricRecorder {
             .or_else(|| Some(config.default_buckets.clone()))
     }
 
-    pub fn set_metric_description(metric_name: String, description: String) {
+    pub fn set_metric_description(metric_name: &str, metric_type: &MetricType, description: &str) {
         let Some(this) = GLOBAL_RECORDER.get() else {
             return;
         };
         if let Ok(mut config) = this.description_config.write() {
-            config
-                .per_metric_descriptions
-                .insert(MetricString::new(metric_name), description);
+            config.type_specific_descriptions.insert(
+                (
+                    MetricString::new(metric_name.to_string()),
+                    metric_type.clone(),
+                ),
+                description.to_string(),
+            );
         }
     }
 
-    pub fn get_metric_description(metric_name: &str) -> Option<String> {
+    pub fn set_metric_description_catchall(metric_name: &str, description: &str) {
+        let Some(this) = GLOBAL_RECORDER.get() else {
+            return;
+        };
+        if let Ok(mut config) = this.description_config.write() {
+            config.catchall_descriptions.insert(
+                MetricString::new(metric_name.to_string()),
+                description.to_string(),
+            );
+        }
+    }
+
+    pub fn get_metric_description(metric_name: &str, metric_type: &MetricType) -> Option<String> {
         let this = GLOBAL_RECORDER.get()?;
         let config = this.description_config.read().ok()?;
 
         config
-            .per_metric_descriptions
-            .get(&MetricString::new(metric_name.to_string()))
+            .type_specific_descriptions
+            .get(&(
+                MetricString::new(metric_name.to_string()),
+                metric_type.clone(),
+            ))
             .cloned()
+            .or_else(|| {
+                config
+                    .catchall_descriptions
+                    .get(&MetricString::new(metric_name.to_string()))
+                    .cloned()
+            })
     }
 
     async fn recorder(rx: Receiver<MetricChange>) {
@@ -246,7 +273,8 @@ impl MetricRecorder {
         };
 
         // Collect all metrics grouped by base name
-        let mut metric_groups: BTreeMap<MetricString, Vec<(Metric, crate::Value)>> = BTreeMap::new();
+        let mut metric_groups: BTreeMap<MetricString, Vec<(Metric, crate::Value)>> =
+            BTreeMap::new();
 
         for shard in &*this.storage.shards {
             let Ok(guard) = shard.read() else {
@@ -261,85 +289,108 @@ impl MetricRecorder {
         }
 
         // Get description config once
-        let descriptions = {
+        let description_config = {
             let config = this.description_config.read().unwrap();
-            config.per_metric_descriptions.clone()
+            (
+                config.type_specific_descriptions.clone(),
+                config.catchall_descriptions.clone(),
+            )
         };
 
         let histogram_config = {
             let config = this.histogram_config.read().unwrap();
-            (config.default_buckets.clone(), config.per_metric_buckets.clone())
+            (
+                config.default_buckets.clone(),
+                config.per_metric_buckets.clone(),
+            )
         };
 
         let mut output = vec![];
 
         // Render each metric group
         for (metric_name, metrics) in metric_groups {
-            // Get description if it exists
-            let description = descriptions.get(&metric_name);
-
-            // Determine metric type from first metric in group
-            let metric_type = metrics[0].0.metric_type.clone();
-
-            // Output HELP comment if description exists
-            if let Some(desc) = description {
-                output.push(format!("# HELP {} {}", metric_name, desc));
+            // Group metrics by type since same name can have different types
+            let mut metrics_by_type: BTreeMap<MetricType, Vec<(Metric, crate::Value)>> =
+                BTreeMap::new();
+            for (metric, value) in metrics {
+                metrics_by_type
+                    .entry(metric.metric_type.clone())
+                    .or_insert_with(Vec::new)
+                    .push((metric, value));
             }
 
-            // Output TYPE comment
-            let type_str = match metric_type {
-                crate::MetricType::Counter => "counter",
-                crate::MetricType::Gauge => "gauge",
-                crate::MetricType::Histogram => "histogram",
-            };
-            output.push(format!("# TYPE {} {}", metric_name, type_str));
+            // Render each type group separately
+            for (metric_type, type_metrics) in metrics_by_type {
+                // Lookup description: type-specific first, then catchall
+                let description = description_config
+                    .0
+                    .get(&(metric_name.clone(), metric_type.clone()))
+                    .or_else(|| description_config.1.get(&metric_name))
+                    .cloned();
 
-            // Render all metric instances
-            for (metric, value) in metrics {
-                match value {
-                    crate::Value::Counter(_) | crate::Value::Gauge(_) => {
-                        let mut buf = metric.as_prometheus();
-                        buf.push_str(&format!(" {}", value.get()));
-                        output.push(buf);
-                    }
-                    crate::Value::Histogram {
-                        buckets,
-                        sum,
-                        count,
-                    } => {
-                        // Get bucket boundaries for this metric
-                        let bucket_boundaries = histogram_config
-                            .1
-                            .get(&metric.name)
-                            .cloned()
-                            .unwrap_or_else(|| histogram_config.0.clone());
+                // Output HELP comment if description exists
+                if let Some(desc) = description {
+                    output.push(format!("# HELP {} {}", metric_name, desc));
+                }
 
-                        // Render histogram buckets
-                        for (boundary, bucket_sum) in bucket_boundaries.iter().zip(buckets.iter()) {
-                            let mut m = metric.clone();
-                            m.labels.push((
-                                MetricString::new("le".to_string()),
-                                MetricString::new(boundary.to_string()),
-                            ));
-                            let mut buf = m.as_prometheus();
-                            buf.push_str(&format!(" {}", bucket_sum));
+                // Output TYPE comment
+                let type_str = match metric_type {
+                    crate::MetricType::Counter => "counter",
+                    crate::MetricType::Gauge => "gauge",
+                    crate::MetricType::Histogram => "histogram",
+                };
+                output.push(format!("# TYPE {} {}", metric_name, type_str));
+
+                // Render all metric instances for this type
+                for (metric, value) in type_metrics {
+                    match value {
+                        crate::Value::Counter(_) | crate::Value::Gauge(_) => {
+                            let mut buf = metric.as_prometheus();
+                            buf.push_str(&format!(" {}", value.get()));
                             output.push(buf);
                         }
+                        crate::Value::Histogram {
+                            buckets,
+                            sum,
+                            count,
+                        } => {
+                            // Get bucket boundaries for this metric
+                            let bucket_boundaries = histogram_config
+                                .1
+                                .get(&metric.name)
+                                .cloned()
+                                .unwrap_or_else(|| histogram_config.0.clone());
 
-                        // Render _sum (no HELP/TYPE needed, inherits from base)
-                        let mut sum_metric = metric.clone();
-                        sum_metric.name = crate::MetricString::new(format!("{}_sum", metric.name));
-                        let mut buf = sum_metric.as_prometheus();
-                        buf.push_str(&format!(" {}", sum));
-                        output.push(buf);
+                            // Render histogram buckets
+                            for (boundary, bucket_sum) in
+                                bucket_boundaries.iter().zip(buckets.iter())
+                            {
+                                let mut m = metric.clone();
+                                m.labels.push((
+                                    MetricString::new("le".to_string()),
+                                    MetricString::new(boundary.to_string()),
+                                ));
+                                let mut buf = m.as_prometheus();
+                                buf.push_str(&format!(" {}", bucket_sum));
+                                output.push(buf);
+                            }
 
-                        // Render _count (no HELP/TYPE needed, inherits from base)
-                        let mut count_metric = metric.clone();
-                        count_metric.name =
-                            crate::MetricString::new(format!("{}_count", metric.name));
-                        let mut buf = count_metric.as_prometheus();
-                        buf.push_str(&format!(" {}", count));
-                        output.push(buf);
+                            // Render _sum (no HELP/TYPE needed, inherits from base)
+                            let mut sum_metric = metric.clone();
+                            sum_metric.name =
+                                crate::MetricString::new(format!("{}_sum", metric.name));
+                            let mut buf = sum_metric.as_prometheus();
+                            buf.push_str(&format!(" {}", sum));
+                            output.push(buf);
+
+                            // Render _count (no HELP/TYPE needed, inherits from base)
+                            let mut count_metric = metric.clone();
+                            count_metric.name =
+                                crate::MetricString::new(format!("{}_count", metric.name));
+                            let mut buf = count_metric.as_prometheus();
+                            buf.push_str(&format!(" {}", count));
+                            output.push(buf);
+                        }
                     }
                 }
             }
