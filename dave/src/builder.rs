@@ -3,8 +3,8 @@ use std::{collections::HashMap, num::NonZeroUsize};
 use tokio::time::Duration;
 
 use crate::{
-    MetricString,
-    recorder::{FreshnessConfig, HistogramConfig, MetricRecorder},
+    MetricString, MetricType,
+    recorder::{FreshnessConfig, HistogramConfig, MetricDescriptionConfig, MetricRecorder},
 };
 
 pub struct DaveBuilder {
@@ -40,6 +40,12 @@ pub struct DaveBuilder {
 
     /// Per-metric histogram bucket overrides
     per_metric_histogram_buckets: HashMap<String, Vec<f64>>,
+
+    /// Type-specific metric descriptions for Prometheus HELP comments
+    type_specific_descriptions: HashMap<(String, MetricType), String>,
+
+    /// Catchall metric descriptions for Prometheus HELP comments
+    catchall_descriptions: HashMap<String, String>,
 }
 
 impl Default for DaveBuilder {
@@ -65,6 +71,8 @@ impl Default for DaveBuilder {
                 f64::INFINITY,
             ],
             per_metric_histogram_buckets: Default::default(),
+            type_specific_descriptions: Default::default(),
+            catchall_descriptions: Default::default(),
         }
     }
 }
@@ -102,11 +110,25 @@ impl DaveBuilder {
             per_metric_buckets,
         };
 
+        let mut type_specific_descriptions = HashMap::new();
+        for ((name, metric_type), description) in self.type_specific_descriptions {
+            type_specific_descriptions.insert((MetricString::new(name), metric_type), description);
+        }
+        let mut catchall_descriptions = HashMap::new();
+        for (name, description) in self.catchall_descriptions {
+            catchall_descriptions.insert(MetricString::new(name), description);
+        }
+        let description_config = MetricDescriptionConfig {
+            type_specific_descriptions,
+            catchall_descriptions,
+        };
+
         MetricRecorder::initialize(
             NonZeroUsize::new(self.shards).unwrap(),
             self.channel_buffer_size,
             freshness_config,
             histogram_config,
+            description_config,
         );
     }
 
@@ -146,6 +168,26 @@ impl DaveBuilder {
         let _ = self
             .per_metric_histogram_buckets
             .insert(metric.to_string(), buckets);
+        self
+    }
+
+    pub fn metric_description(mut self, metric: &str, description: &str) -> Self {
+        let _ = self
+            .catchall_descriptions
+            .insert(metric.to_string(), description.to_string());
+        self
+    }
+
+    pub fn metric_description_for_type(
+        mut self,
+        metric: &str,
+        metric_type: &MetricType,
+        description: &str,
+    ) -> Self {
+        let _ = self.type_specific_descriptions.insert(
+            (metric.to_string(), metric_type.clone()),
+            description.to_string(),
+        );
         self
     }
 }

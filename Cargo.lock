@@ -360,6 +360,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "dave"
+version = "0.1.0"
+dependencies = [
+ "flume",
+ "internment",
+ "tokio",
+]
+
+[[package]]
 name = "deranged"
 version = "0.5.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -430,7 +439,7 @@ name = "example"
 version = "0.1.0"
 dependencies = [
  "actix-web",
- "metrics",
+ "dave",
  "tracing-subscriber",
 ]
 
@@ -829,15 +838,6 @@ name = "memchr"
 version = "2.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f52b00d39961fc5b2736ea853c9cc86238e165017a493d1d5c8eac6bdc4cc273"
-
-[[package]]
-name = "metrics"
-version = "0.1.0"
-dependencies = [
- "flume",
- "internment",
- "tokio",
-]
 
 [[package]]
 name = "mime"
