@@ -17,11 +17,12 @@ async fn main() -> std::io::Result<()> {
                 0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
             ],
         )
+        .metric_description("http_requests", "the total number of http requests")
         .build_install();
 
     // Can also set freshness and histogram buckets at runtime after initialization
     MetricRecorder::set_metric_freshness("other_metric".to_string(), Duration::from_secs(10 * 60));
-    // MetricRecorder::set_metric_histogram_buckets("some_histogram".to_string(), vec![1.0, 5.0, 10.0]);
+    MetricRecorder::set_metric_histogram_buckets("some_histogram".to_string(), vec![1.0, 5.0, 10.0]);
 
     HttpServer::new(|| {
         App::new()

@@ -4,7 +4,7 @@ use tokio::time::Duration;
 
 use crate::{
     MetricString,
-    recorder::{FreshnessConfig, HistogramConfig, MetricRecorder},
+    recorder::{FreshnessConfig, HistogramConfig, MetricDescriptionConfig, MetricRecorder},
 };
 
 pub struct DaveBuilder {
@@ -40,6 +40,9 @@ pub struct DaveBuilder {
 
     /// Per-metric histogram bucket overrides
     per_metric_histogram_buckets: HashMap<String, Vec<f64>>,
+
+    /// Per-metric descriptions for Prometheus HELP comments
+    per_metric_descriptions: HashMap<String, String>,
 }
 
 impl Default for DaveBuilder {
@@ -65,6 +68,7 @@ impl Default for DaveBuilder {
                 f64::INFINITY,
             ],
             per_metric_histogram_buckets: Default::default(),
+            per_metric_descriptions: Default::default(),
         }
     }
 }
@@ -102,11 +106,20 @@ impl DaveBuilder {
             per_metric_buckets,
         };
 
+        let mut per_metric_descriptions = HashMap::new();
+        for (name, description) in self.per_metric_descriptions {
+            per_metric_descriptions.insert(MetricString::new(name), description);
+        }
+        let description_config = MetricDescriptionConfig {
+            per_metric_descriptions,
+        };
+
         MetricRecorder::initialize(
             NonZeroUsize::new(self.shards).unwrap(),
             self.channel_buffer_size,
             freshness_config,
             histogram_config,
+            description_config,
         );
     }
 
@@ -146,6 +159,13 @@ impl DaveBuilder {
         let _ = self
             .per_metric_histogram_buckets
             .insert(metric.to_string(), buckets);
+        self
+    }
+
+    pub fn metric_description(mut self, metric: &str, description: &str) -> Self {
+        let _ = self
+            .per_metric_descriptions
+            .insert(metric.to_string(), description.to_string());
         self
     }
 }
